@@ -40,7 +40,31 @@ public static class PesterRunner
         }
     }
 
-    public static IReadOnlyList<TestResult> Run(string baseUrl)
+    public static IReadOnlyList<string> ListTests()
+    {
+        var testsPath = FindPesterTests();
+        var script =
+            $"$c = New-PesterConfiguration; " +
+            $"$c.Run.Path = '{testsPath}'; " +
+            $"$c.Run.SkipRun = $true; " +
+            $"$c.Run.PassThru = $true; " +
+            $"$c.Output.Verbosity = 'None'; " +
+            $"(Invoke-Pester -Configuration $c).Tests | ForEach-Object {{ $_.ExpandedPath }}";
+
+        var startInfo = new ProcessStartInfo("pwsh", $"-NoProfile -Command \"{script}\"")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = Process.Start(startInfo)!;
+        var stdout = process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    public static IReadOnlyList<TestResult> Run(string baseUrl, string? fullNameFilter = null)
     {
         var testsPath = FindPesterTests();
         var resultFile = Path.Combine(Path.GetTempPath(), $"wafd-pester-{Guid.NewGuid():N}.xml");
@@ -53,6 +77,7 @@ public static class PesterRunner
                 $"$c.TestResult.Enabled = $true; " +
                 $"$c.TestResult.OutputFormat = 'NUnitXml'; " +
                 $"$c.TestResult.OutputPath = '{resultFile}'; " +
+                (fullNameFilter is null ? "" : $"$c.Filter.FullName = '{fullNameFilter.Replace("'", "''")}'; ") +
                 $"Invoke-Pester -Configuration $c";
 
             var startInfo = new ProcessStartInfo("pwsh", $"-NoProfile -Command \"{script}\"")

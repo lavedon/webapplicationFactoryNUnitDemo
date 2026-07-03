@@ -12,5 +12,10 @@ app.Configure(config =>
     config.AddCommand<PesterCommand>("pester")
         .WithDescription("Run the black-box Pester tests against a running API instance.");
 });
-// Bare `runner` (no args) drops into interactive mode.
-return app.Run(args.Length == 0 ? ["interactive"] : args);
+// Bare `runner` (no args) shows the help screen, not the test menu.
+if (args.Length == 0)
+{
+    HelpScreen.Render();
+    return 0;
+}
+return app.Run(args);

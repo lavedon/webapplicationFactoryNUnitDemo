@@ -38,6 +38,10 @@ public class RunCommand : Command<RunSettings>
         output.Line(settings.Filter is null
             ? "Running full test suite..."
             : $"Running tests matching: {settings.Filter}");
+        output.Line("To run this yourself without the runner:");
+        output.Line(settings.Filter is null
+            ? "  dotnet test WebapplicationFactoryTests"
+            : $"  dotnet test WebapplicationFactoryTests --filter \"{settings.Filter}\"");
 
         var results = DotnetTestRunner.Run(settings.Filter);
         output.Results(results);
@@ -66,18 +70,38 @@ public class PesterCommand : Command<PesterSettings>
         }
 
         output.Line($"Running Pester tests against {settings.Url} ...");
+        output.Line("To run this yourself without the runner (PowerShell, API must be running):");
+        output.Line("  Invoke-Pester -Path ./PesterTests");
+
         var results = PesterRunner.Run(settings.Url);
         output.Results(results);
         return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
     }
 }
 
-public class InteractiveCommand : Command<GlobalSettings>
+public class InteractiveCommand : Command<PesterSettings>
 {
-    protected override int Execute(CommandContext context, GlobalSettings settings, CancellationToken cancellationToken)
+    private const string RunAll = "Run ALL tests";
+
+    protected override int Execute(CommandContext context, PesterSettings settings, CancellationToken cancellationToken)
     {
         var output = settings.CreateOutput();
-        output.Line("Discovering tests...");
+
+        var framework = Select(settings, "Which test suite?",
+            ["NUnit (in-process WebApplicationFactory)", "Pester (black-box HTTP against a running API)"]);
+        if (framework is null)
+        {
+            return 1;
+        }
+
+        return framework.StartsWith("NUnit", StringComparison.Ordinal)
+            ? RunNUnit(settings, output)
+            : RunPester(settings, output);
+    }
+
+    private static int RunNUnit(PesterSettings settings, Output output)
+    {
+        output.Line("Discovering NUnit tests...");
         var tests = DotnetTestRunner.ListTests();
         if (tests.Count == 0)
         {
@@ -85,39 +109,95 @@ public class InteractiveCommand : Command<GlobalSettings>
             return 1;
         }
 
-        string selected;
-        if (settings.Plain)
+        var selected = Select(settings, "Pick a test (or run everything):", [RunAll, .. tests]);
+        if (selected is null)
         {
-            for (var i = 0; i < tests.Count; i++)
-            {
-                Console.WriteLine($"{i + 1,3}. {tests[i]}");
-            }
-            Console.Write("Select a test by number: ");
-            if (!int.TryParse(Console.ReadLine(), out var choice) || choice < 1 || choice > tests.Count)
-            {
-                Console.WriteLine("Invalid selection.");
-                return 1;
-            }
-            selected = tests[choice - 1];
-        }
-        else
-        {
-            var prompt = new SelectionPrompt<string>()
-                .Title(settings.HotPink ? "[hotpink]Pick a test to run[/]" : "Pick a test to run")
-                .PageSize(15)
-                .AddChoices(tests);
-            if (settings.HotPink)
-            {
-                prompt.HighlightStyle(new Style(Color.HotPink));
-            }
-            selected = AnsiConsole.Prompt(prompt);
+            return 1;
         }
 
-        // Strip any parameter list so parameterized test cases filter on the method name.
-        var methodName = selected.Split('(')[0];
-        output.Line($"Running: {selected}");
-        var results = DotnetTestRunner.Run($"FullyQualifiedName~{methodName}");
+        string? filter = null;
+        if (selected != RunAll)
+        {
+            // Strip any parameter list so parameterized test cases filter on the method name.
+            filter = $"FullyQualifiedName~{selected.Split('(')[0]}";
+        }
+
+        output.Line(string.Empty);
+        output.Line("To run this yourself without the runner:");
+        output.Line(filter is null
+            ? "  dotnet test WebapplicationFactoryTests"
+            : $"  dotnet test WebapplicationFactoryTests --filter \"{filter}\"");
+        output.Line(string.Empty);
+
+        var results = DotnetTestRunner.Run(filter);
         output.Results(results);
         return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
+    }
+
+    private static int RunPester(PesterSettings settings, Output output)
+    {
+        if (!PesterRunner.IsApiReachable(settings.Url))
+        {
+            output.Line($"API is not reachable at {settings.Url}.");
+            output.Line("Start it first (cd API; dotnet run) or pass --url <baseurl>.");
+            return 1;
+        }
+
+        output.Line("Discovering Pester tests...");
+        var tests = PesterRunner.ListTests();
+        if (tests.Count == 0)
+        {
+            output.Line("No tests found. Is Pester 5 installed?");
+            return 1;
+        }
+
+        var selected = Select(settings, "Pick a test (or run everything):", [RunAll, .. tests]);
+        if (selected is null)
+        {
+            return 1;
+        }
+
+        var filter = selected == RunAll ? null : $"*{selected}*";
+
+        output.Line(string.Empty);
+        output.Line("To run this yourself without the runner (PowerShell, API must be running):");
+        output.Line(filter is null
+            ? "  Invoke-Pester -Path ./PesterTests"
+            : $"  Invoke-Pester -Path ./PesterTests -FullNameFilter '{filter}'");
+        output.Line(string.Empty);
+
+        var results = PesterRunner.Run(settings.Url, filter);
+        output.Results(results);
+        return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
+    }
+
+    /// <summary>Menu that honors --plain (numbered list + stdin) and --hotpink.</summary>
+    private static string? Select(GlobalSettings settings, string title, IReadOnlyList<string> choices)
+    {
+        if (settings.Plain)
+        {
+            Console.WriteLine(title);
+            for (var i = 0; i < choices.Count; i++)
+            {
+                Console.WriteLine($"{i + 1,3}. {choices[i]}");
+            }
+            Console.Write("Selection: ");
+            if (!int.TryParse(Console.ReadLine(), out var choice) || choice < 1 || choice > choices.Count)
+            {
+                Console.WriteLine("Invalid selection.");
+                return null;
+            }
+            return choices[choice - 1];
+        }
+
+        var prompt = new SelectionPrompt<string>()
+            .Title(settings.HotPink ? $"[hotpink]{title}[/]" : title)
+            .PageSize(15)
+            .AddChoices(choices);
+        if (settings.HotPink)
+        {
+            prompt.HighlightStyle(new Style(Color.HotPink));
+        }
+        return AnsiConsole.Prompt(prompt);
     }
 }
