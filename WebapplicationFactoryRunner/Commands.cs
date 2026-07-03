@@ -45,6 +45,33 @@ public class RunCommand : Command<RunSettings>
     }
 }
 
+public class PesterSettings : GlobalSettings
+{
+    [CommandOption("-u|--url <BASEURL>")]
+    [Description("Base URL of the running API. Default: https://localhost:7016")]
+    public string Url { get; init; } = "https://localhost:7016";
+}
+
+public class PesterCommand : Command<PesterSettings>
+{
+    protected override int Execute(CommandContext context, PesterSettings settings, CancellationToken cancellationToken)
+    {
+        var output = settings.CreateOutput();
+
+        if (!PesterRunner.IsApiReachable(settings.Url))
+        {
+            output.Line($"API is not reachable at {settings.Url}.");
+            output.Line("Start it first (cd API; dotnet run) or pass --url <baseurl>.");
+            return 1;
+        }
+
+        output.Line($"Running Pester tests against {settings.Url} ...");
+        var results = PesterRunner.Run(settings.Url);
+        output.Results(results);
+        return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
+    }
+}
+
 public class InteractiveCommand : Command<GlobalSettings>
 {
     protected override int Execute(CommandContext context, GlobalSettings settings, CancellationToken cancellationToken)
