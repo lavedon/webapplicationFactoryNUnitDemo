@@ -21,6 +21,71 @@ public static class PesterRunner
             "Could not locate the PesterTests folder. Run from inside the repository.");
     }
 
+    public static string FindApiProject()
+    {
+        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "API", "webapplicationFactoryDemo.csproj");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            dir = dir.Parent;
+        }
+        throw new InvalidOperationException(
+            "Could not locate API/webapplicationFactoryDemo.csproj. Run from inside the repository.");
+    }
+
+    /// <summary>
+    /// Ensures the API is running: returns null if it already was, otherwise starts it
+    /// with `dotnet run` and returns the process for the caller to kill when done.
+    /// Throws if the API cannot be reached after startup.
+    /// </summary>
+    public static Process? EnsureApiRunning(string baseUrl, Action<string> log)
+    {
+        if (IsApiReachable(baseUrl))
+        {
+            return null;
+        }
+
+        log($"API not running at {baseUrl} — starting it (dotnet run)...");
+        var process = Process.Start(new ProcessStartInfo(
+            "dotnet", $"run --project \"{FindApiProject()}\"")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!;
+
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            Thread.Sleep(500);
+            if (IsApiReachable(baseUrl))
+            {
+                log("API is up.");
+                return process;
+            }
+            if (process.HasExited)
+            {
+                break;
+            }
+        }
+
+        try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+        throw new InvalidOperationException(
+            $"Started the API but it never became reachable at {baseUrl}. " +
+            "Check that the URL matches launchSettings.json (or pass --url).");
+    }
+
+    public static void StopApi(Process? process)
+    {
+        if (process is null)
+        {
+            return;
+        }
+        try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+    }
+
     public static bool IsApiReachable(string baseUrl)
     {
         try

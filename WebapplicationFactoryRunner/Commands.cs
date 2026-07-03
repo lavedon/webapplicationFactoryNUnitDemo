@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -62,67 +63,120 @@ public class PesterCommand : Command<PesterSettings>
     {
         var output = settings.CreateOutput();
 
-        if (!PesterRunner.IsApiReachable(settings.Url))
+        var api = PesterRunner.EnsureApiRunning(settings.Url, output.Line);
+        try
         {
-            output.Line($"API is not reachable at {settings.Url}.");
-            output.Line("Start it first (cd API; dotnet run) or pass --url <baseurl>.");
-            return 1;
+            output.Line($"Running Pester tests against {settings.Url} ...");
+            output.Line("To run this yourself without the runner (with the API running):");
+            output.Line("  Invoke-Pester -Path ./PesterTests");
+
+            var results = PesterRunner.Run(settings.Url);
+            output.Results(results);
+            return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
         }
-
-        output.Line($"Running Pester tests against {settings.Url} ...");
-        output.Line("To run this yourself without the runner (PowerShell, API must be running):");
-        output.Line("  Invoke-Pester -Path ./PesterTests");
-
-        var results = PesterRunner.Run(settings.Url);
-        output.Results(results);
-        return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
+        finally
+        {
+            PesterRunner.StopApi(api);
+        }
     }
 }
 
 public class InteractiveCommand : Command<PesterSettings>
 {
-    private const string RunAll = "Run ALL tests";
+    private const string RunAllNUnit = "Run ALL NUnit tests";
+    private const string RunAllPester = "Run ALL Pester tests";
+    private const string PickNUnit = "Pick an individual NUnit test";
+    private const string PickPester = "Pick an individual Pester test";
+    private const string Back = "Back";
+    private const string Exit = "Exit";
+
+    // The API instance this session started (if any) — kept alive between menu
+    // actions so consecutive Pester runs don't restart it, killed on Exit.
+    private Process? _api;
+
+    private (string Action, IReadOnlyList<TestResult> Results)? _lastRun;
 
     protected override int Execute(CommandContext context, PesterSettings settings, CancellationToken cancellationToken)
     {
         var output = settings.CreateOutput();
-
-        var framework = Select(settings, "Which test suite?",
-            ["NUnit (in-process WebApplicationFactory)", "Pester (black-box HTTP against a running API)"]);
-        if (framework is null)
+        try
         {
-            return 1;
-        }
+            while (true)
+            {
+                output.Line(string.Empty);
+                if (_lastRun is { } last)
+                {
+                    output.StatusTable(last.Action, last.Results);
+                }
+                var choice = Select(settings, "Taco Bell API test runner",
+                    [RunAllNUnit, RunAllPester, PickNUnit, PickPester, Exit]);
 
-        return framework.StartsWith("NUnit", StringComparison.Ordinal)
-            ? RunNUnit(settings, output)
-            : RunPester(settings, output);
+                switch (choice)
+                {
+                    case RunAllNUnit:
+                        RunNUnit(output, filter: null);
+                        break;
+                    case RunAllPester:
+                        RunPester(settings, output, filter: null);
+                        break;
+                    case PickNUnit:
+                        PickAndRunNUnit(settings, output);
+                        break;
+                    case PickPester:
+                        PickAndRunPester(settings, output);
+                        break;
+                    case Exit or null:
+                        return 0;
+                }
+            }
+        }
+        finally
+        {
+            PesterRunner.StopApi(_api);
+        }
     }
 
-    private static int RunNUnit(PesterSettings settings, Output output)
+    private void PickAndRunNUnit(PesterSettings settings, Output output)
     {
         output.Line("Discovering NUnit tests...");
         var tests = DotnetTestRunner.ListTests();
         if (tests.Count == 0)
         {
             output.Line("No tests found.");
-            return 1;
+            return;
         }
 
-        var selected = Select(settings, "Pick a test (or run everything):", [RunAll, .. tests]);
-        if (selected is null)
+        var selected = Select(settings, "Pick a test:", [Back, .. tests]);
+        if (selected is null or Back)
         {
-            return 1;
+            return;
         }
 
-        string? filter = null;
-        if (selected != RunAll)
+        // Strip any parameter list so parameterized test cases filter on the method name.
+        RunNUnit(output, $"FullyQualifiedName~{selected.Split('(')[0]}");
+    }
+
+    private void PickAndRunPester(PesterSettings settings, Output output)
+    {
+        output.Line("Discovering Pester tests...");
+        var tests = PesterRunner.ListTests();
+        if (tests.Count == 0)
         {
-            // Strip any parameter list so parameterized test cases filter on the method name.
-            filter = $"FullyQualifiedName~{selected.Split('(')[0]}";
+            output.Line("No tests found. Is Pester 5 installed?");
+            return;
         }
 
-        output.Line(string.Empty);
+        var selected = Select(settings, "Pick a test:", [Back, .. tests]);
+        if (selected is null or Back)
+        {
+            return;
+        }
+
+        RunPester(settings, output, $"*{selected}*");
+    }
+
+    private void RunNUnit(Output output, string? filter)
+    {
         output.Line("To run this yourself without the runner:");
         output.Line(filter is null
             ? "  dotnet test WebapplicationFactoryTests"
@@ -131,36 +185,22 @@ public class InteractiveCommand : Command<PesterSettings>
 
         var results = DotnetTestRunner.Run(filter);
         output.Results(results);
-        return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
+        _lastRun = (filter is null ? "NUnit: all tests" : $"NUnit: {filter}", results);
     }
 
-    private static int RunPester(PesterSettings settings, Output output)
+    private void RunPester(PesterSettings settings, Output output, string? filter)
     {
-        if (!PesterRunner.IsApiReachable(settings.Url))
+        try
         {
-            output.Line($"API is not reachable at {settings.Url}.");
-            output.Line("Start it first (cd API; dotnet run) or pass --url <baseurl>.");
-            return 1;
+            _api ??= PesterRunner.EnsureApiRunning(settings.Url, output.Line);
+        }
+        catch (InvalidOperationException ex)
+        {
+            output.Line(ex.Message);
+            return;
         }
 
-        output.Line("Discovering Pester tests...");
-        var tests = PesterRunner.ListTests();
-        if (tests.Count == 0)
-        {
-            output.Line("No tests found. Is Pester 5 installed?");
-            return 1;
-        }
-
-        var selected = Select(settings, "Pick a test (or run everything):", [RunAll, .. tests]);
-        if (selected is null)
-        {
-            return 1;
-        }
-
-        var filter = selected == RunAll ? null : $"*{selected}*";
-
-        output.Line(string.Empty);
-        output.Line("To run this yourself without the runner (PowerShell, API must be running):");
+        output.Line("To run this yourself without the runner (with the API running):");
         output.Line(filter is null
             ? "  Invoke-Pester -Path ./PesterTests"
             : $"  Invoke-Pester -Path ./PesterTests -FullNameFilter '{filter}'");
@@ -168,7 +208,7 @@ public class InteractiveCommand : Command<PesterSettings>
 
         var results = PesterRunner.Run(settings.Url, filter);
         output.Results(results);
-        return results.Any(r => r.Outcome == "Failed") ? 1 : 0;
+        _lastRun = (filter is null ? "Pester: all tests" : $"Pester: {filter}", results);
     }
 
     /// <summary>Menu that honors --plain (numbered list + stdin) and --hotpink.</summary>
@@ -191,7 +231,7 @@ public class InteractiveCommand : Command<PesterSettings>
         }
 
         var prompt = new SelectionPrompt<string>()
-            .Title(settings.HotPink ? $"[hotpink]{title}[/]" : title)
+            .Title(settings.HotPink ? $"[hotpink]{Markup.Escape(title)}[/]" : $"[bold blue]{Markup.Escape(title)}[/]")
             .PageSize(15)
             .AddChoices(choices);
         if (settings.HotPink)

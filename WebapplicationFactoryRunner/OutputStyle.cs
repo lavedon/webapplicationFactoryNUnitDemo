@@ -32,6 +32,37 @@ public class Output(OutputStyle style)
         }
     }
 
+    /// <summary>Compact status table shown above the interactive menu each loop.</summary>
+    public void StatusTable(string lastAction, IReadOnlyList<TestResult> results)
+    {
+        var passed = results.Count(r => r.Outcome == "Passed");
+        var failed = results.Count(r => r.Outcome == "Failed");
+
+        if (style == OutputStyle.Plain)
+        {
+            Console.WriteLine($"Last run: {lastAction} — Total: {results.Count}, Passed: {passed}, Failed: {failed}");
+            return;
+        }
+
+        var pink = style == OutputStyle.HotPink;
+        var table = new Table().RoundedBorder()
+            .Title(pink ? "[hotpink]Last run[/]" : "[bold blue]Last run[/]");
+        if (pink)
+        {
+            table.BorderColor(Color.HotPink);
+        }
+        table.AddColumn("Action");
+        table.AddColumn("Total");
+        table.AddColumn("Passed");
+        table.AddColumn("Failed");
+        table.AddRow(
+            $"[{(pink ? "hotpink" : "default")}]{Markup.Escape(lastAction)}[/]",
+            $"[{(pink ? "hotpink" : "default")}]{results.Count}[/]",
+            $"[{(pink ? "hotpink" : "green")}]{passed}[/]",
+            $"[{(pink ? "hotpink" : failed > 0 ? "red" : "grey")}]{failed}[/]");
+        AnsiConsole.Write(table);
+    }
+
     public void Results(IReadOnlyList<TestResult> results)
     {
         if (style == OutputStyle.Plain)
