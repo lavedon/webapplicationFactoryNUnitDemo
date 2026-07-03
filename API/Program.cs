@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using WebapplicationFactoryDemo.Api.Data;
+using WebapplicationFactoryDemo.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +12,8 @@ builder.Services.AddOpenApi();
 
 builder.Services.AddSingleton<SqliteConnectionFactory>();
 builder.Services.AddSingleton<DatabaseInitializer>();
+builder.Services.AddScoped<IMenuItemRepository, MenuItemRepository>();
+builder.Services.AddScoped<IMenuItemService, MenuItemService>();
 
 var auth = builder.Configuration.GetSection("Auth");
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

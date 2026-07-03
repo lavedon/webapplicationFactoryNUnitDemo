@@ -1,24 +1,21 @@
-using Dapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using WebapplicationFactoryDemo.Api.Data;
 using WebapplicationFactoryDemo.Api.Models;
+using WebapplicationFactoryDemo.Api.Services;
 
 namespace WebapplicationFactoryDemo.Api.Controllers;
 
 [ApiController]
 [Authorize]
 [Route("api/items")]
-public class ItemsController(SqliteConnectionFactory connectionFactory) : ControllerBase
+public class ItemsController(IMenuItemService menuItems) : ControllerBase
 {
     [HttpGet]
     public IActionResult GetAll([FromQuery] int? page, [FromQuery] int? pageSize)
     {
-        using var connection = connectionFactory.Open();
-
         if (page is null && pageSize is null)
         {
-            return Ok(connection.Query<MenuItem>("SELECT * FROM MenuItems ORDER BY Id"));
+            return Ok(menuItems.GetAll());
         }
 
         var currentPage = page ?? 1;
@@ -36,71 +33,30 @@ public class ItemsController(SqliteConnectionFactory connectionFactory) : Contro
             return ValidationProblem(ModelState);
         }
 
-        var totalCount = connection.ExecuteScalar<int>("SELECT COUNT(*) FROM MenuItems");
-        var items = connection.Query<MenuItem>(
-            "SELECT * FROM MenuItems ORDER BY Id LIMIT @Limit OFFSET @Offset",
-            new { Limit = size, Offset = (currentPage - 1) * size }).ToList();
-
-        return Ok(new PagedResponse<MenuItem>(
-            items, currentPage, size, totalCount,
-            (int)Math.Ceiling(totalCount / (double)size)));
+        return Ok(menuItems.GetPaged(currentPage, size));
     }
 
     [HttpGet("{id:long}")]
     public IActionResult GetById(long id)
     {
-        using var connection = connectionFactory.Open();
-        var item = connection.QuerySingleOrDefault<MenuItem>(
-            "SELECT * FROM MenuItems WHERE Id = @id", new { id });
+        var item = menuItems.GetById(id);
         return item is null ? NotFoundProblem(id) : Ok(item);
     }
 
     [HttpPost]
     public IActionResult Create(MenuItemRequest request)
     {
-        using var connection = connectionFactory.Open();
-        var id = connection.ExecuteScalar<long>(
-            """
-            INSERT INTO MenuItems (Name, Calories, Price, ProteinGrams, IsBreakfast)
-            VALUES (@Name, @Calories, @Price, @ProteinGrams, @IsBreakfast);
-            SELECT last_insert_rowid();
-            """,
-            request);
-
-        var created = new MenuItem
-        {
-            Id = id,
-            Name = request.Name,
-            Calories = request.Calories,
-            Price = request.Price,
-            ProteinGrams = request.ProteinGrams,
-            IsBreakfast = request.IsBreakfast,
-        };
-        return CreatedAtAction(nameof(GetById), new { id }, created);
+        var created = menuItems.Create(request);
+        return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
     [HttpPut("{id:long}")]
-    public IActionResult Update(long id, MenuItemRequest request)
-    {
-        using var connection = connectionFactory.Open();
-        var rows = connection.Execute(
-            """
-            UPDATE MenuItems
-            SET Name = @Name, Calories = @Calories, Price = @Price,
-                ProteinGrams = @ProteinGrams, IsBreakfast = @IsBreakfast
-            WHERE Id = @Id
-            """,
-            new { request.Name, request.Calories, request.Price, request.ProteinGrams, request.IsBreakfast, Id = id });
-        return rows == 0 ? NotFoundProblem(id) : NoContent();
-    }
+    public IActionResult Update(long id, MenuItemRequest request) =>
+        menuItems.Update(id, request) ? NoContent() : NotFoundProblem(id);
 
     [HttpDelete("{id:long}")]
-    public IActionResult Delete(long id)
-    {
-        using var connection = connectionFactory.Open();
-        var rows = connection.Execute("DELETE FROM MenuItems WHERE Id = @id", new { id });
-        return rows == 0 ? NotFoundProblem(id) : NoContent();
-    }
+    public IActionResult Delete(long id) =>
+        menuItems.Delete(id) ? NoContent() : NotFoundProblem(id);
 
     private ObjectResult NotFoundProblem(long id) =>
         Problem(
